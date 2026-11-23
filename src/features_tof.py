@@ -51,6 +51,12 @@ def add_tof_features(df, feat):
         max_val[no_obj] = NO_OBJECT_DIST
         std_val[no_obj] = 0.0
 
+        # Steps where the sensor was broken (all NaN in the raw data) get no statistics here
+        broken = df[f"tof_{i}_broken"].to_numpy() == 1
+        active = n_valid.astype(np.float32) / 64.0  # Active pixel fraction (0..1)
+        for s_arr in (active, mean_val, std_val, min_val, max_val):
+            s_arr[broken] = np.nan
+
         # 4x4 Quadrant directional asymmetries on the 8x8 grid
         grid_valid = valid_mask.reshape(n_rows, 8, 8).astype(np.float32)
         q1 = grid_valid[:, :4, :4].mean(axis=(1, 2))  # Top-Left
@@ -58,19 +64,20 @@ def add_tof_features(df, feat):
         q3 = grid_valid[:, 4:, :4].mean(axis=(1, 2))  # Bottom-Left
         q4 = grid_valid[:, 4:, 4:].mean(axis=(1, 2))  # Bottom-Right
 
-        tof_stats["active"][:, idx] = n_valid / 64.0  # Active pixel fraction (0..1)
+        lr_diff = 0.5 * (q2 + q4) - 0.5 * (q1 + q3)
+        tb_diff = 0.5 * (q1 + q2) - 0.5 * (q3 + q4)
+        lr_diff[broken] = np.nan
+        tb_diff[broken] = np.nan
+
+        tof_stats["active"][:, idx] = active
         tof_stats["mean"][:, idx] = mean_val
         tof_stats["std"][:, idx] = std_val
         tof_stats["min"][:, idx] = min_val
         tof_stats["max"][:, idx] = max_val
-        tof_stats["lr_diff"][:, idx] = 0.5 * (q2 + q4) - 0.5 * (q1 + q3)
-        tof_stats["tb_diff"][:, idx] = 0.5 * (q1 + q2) - 0.5 * (q3 + q4)
+        tof_stats["lr_diff"][:, idx] = lr_diff
+        tof_stats["tb_diff"][:, idx] = tb_diff
 
-    # A sensor broken for the whole sequence has no real readings: borrow the row average
-    # of the working sensors instead, with a fixed default if all sensors are broken
-    broken_cols = [f"tof_{i}_broken" for i in range(1, 6)]
-    seq_broken = df.groupby("sequence_id", sort=False)[broken_cols].transform("min")
-    seq_broken = seq_broken.to_numpy() == 1
+    # Impute per-sensor ToF summary features within each sequence, then cross-sensor fallback
     defaults = {
         "active": 0.0,
         "mean": NO_OBJECT_DIST,
@@ -83,7 +90,8 @@ def add_tof_features(df, feat):
     for s_name in stat_names:
         s_cols = [f"tof_{i}_{s_name}" for i in range(1, 6)]
         s_df = pd.DataFrame(tof_stats[s_name], index=df.index, columns=s_cols)
-        s_df = s_df.mask(seq_broken)
+        s_df = s_df.groupby(df["sequence_id"], sort=False).ffill()
+        s_df = s_df.groupby(df["sequence_id"], sort=False).bfill()
         row_avg = s_df.mean(axis=1).fillna(defaults[s_name])
         for c in s_cols:
             s_df[c] = s_df[c].fillna(row_avg)
