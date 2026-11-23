@@ -159,6 +159,7 @@ if __name__ == "__main__":
 
     clean = preprocess(train, demo)
     data = pd.concat([clean, add_imu_features(clean), add_tof_thm_features(clean)], axis=1)
+    data = data.sort_index()  # back to the original row order
 
     Path("data/processed").mkdir(parents=True, exist_ok=True)
     data.to_parquet("data/processed/train.parquet", index=False)
